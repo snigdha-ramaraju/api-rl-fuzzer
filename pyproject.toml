@@ -1,0 +1,26 @@
+[project]
+name = "api-rl-fuzzer"
+version = "0.2.0"
+description = "RL-based API fuzzing agent (Phase 1-5: ingestion, seed corpus, RL environment, PPO training, local LLM brainstormer; Phase 6: SQLite tracking, baselines, evaluation)"
+requires-python = ">=3.11"
+dependencies = [
+    "pyyaml>=6.0",
+    "openapi-spec-validator>=0.7",
+    "httpx>=0.27",
+    "gymnasium>=0.29",
+    "numpy>=1.26",
+    "stable-baselines3>=2.3,<3.0",
+    "pydantic>=2.6",
+    "ollama>=0.3",
+    "psutil>=5.9",
+]
+# The LLM brainstormer (Phase 5) is a required component, but talks only
+# to a locally-running Ollama instance (see src/brainstormer/llm_client.py)
+# -- no paid-API code path exists anywhere in this project. stable-baselines3
+# pulls in torch (CPU is sufficient); everything above is free/open-source/local.
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

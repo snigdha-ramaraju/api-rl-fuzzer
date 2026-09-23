@@ -1,0 +1,5 @@
+[
+  {"operation_id": "createOrder", "payload": {"item_id": "sku-123", "quantity": 2}},
+  {"operation_id": "createOrder", "payload": {"item_id": "sku-456", "quantity": 1}},
+  {"operation_id": "getOrder", "payload": {"orderId": "ord-9"}}
+]

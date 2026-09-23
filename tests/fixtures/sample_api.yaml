@@ -1,0 +1,90 @@
+openapi: 3.0.3
+info:
+  title: Sample Orders API
+  version: "1.0"
+paths:
+  /orders:
+    post:
+      operationId: createOrder
+      tags: [orders]
+      summary: Create a new order
+      parameters:
+        - name: priority
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [standard, expedited]
+          example: standard
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [item_id, quantity]
+              properties:
+                item_id:
+                  type: string
+                  example: sku-example-1
+                quantity:
+                  type: integer
+      responses:
+        "201":
+          description: Order created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status]
+                properties:
+                  id:
+                    type: string
+                  status:
+                    type: string
+                    enum: [created, pending]
+  /orders/{orderId}:
+    get:
+      operationId: getOrder
+      tags: [orders]
+      summary: Fetch an order by id
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status]
+                properties:
+                  id:
+                    type: string
+                  status:
+                    type: string
+    post:
+      operationId: cancelOrder
+      tags: [orders]
+      summary: Cancel an order
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  status:
+                    type: string

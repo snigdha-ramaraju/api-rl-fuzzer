@@ -1,0 +1,9 @@
+# Target API configuration for the Phase 3 executor.
+# Point base_url at a local/mock instance by default. max_requests_per_run
+# is a hard budget cap -- it protects against runaway traffic against ANY
+# target, whether or not that target happens to be metered/paid.
+target:
+  base_url: "http://localhost:8080"
+  auth_header: null
+  rate_limit_per_sec: 5
+  max_requests_per_run: 5000
