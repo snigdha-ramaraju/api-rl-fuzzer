@@ -97,6 +97,8 @@ def build_env(
     seed_episode_probability: float = 0.15,
     api_description: str = "",
     use_planted_bugs: bool = False,
+    llm_client: object | None = None,
+    prepare_at_reset: bool = True,
 ):
     """Wires up an ApiFuzzEnv exactly the way Phase 3's own tests do,
     just parameterized so this same function serves both the mock
@@ -160,7 +162,8 @@ def build_env(
     from brainstormer.pool import ScenarioPool
 
     _, unresolved = build_dependency_graph(endpoints)
-    llm_client = LLMClient(host=ollama_host, model_tier_setting=llm_model_tier)
+    if llm_client is None:
+        llm_client = LLMClient(host=ollama_host, model_tier_setting=llm_model_tier)
     pool = ScenarioPool(
         llm_client=llm_client,
         endpoints=endpoints,
@@ -170,8 +173,13 @@ def build_env(
         brainstorm_interval_episodes=brainstorm_interval_episodes,
         max_scenarios_per_call=max_scenarios_per_call,
     )
-    return ScenarioSeededEnv(env, pool, seed_episode_probability=seed_episode_probability,
-                              rng=None if seed is None else random.Random(seed))
+    return ScenarioSeededEnv(
+        env,
+        pool,
+        seed_episode_probability=seed_episode_probability,
+        rng=None if seed is None else random.Random(seed),
+        prepare_at_reset=prepare_at_reset,
+    )
 
 
 def build_model(vec_env, args: argparse.Namespace):

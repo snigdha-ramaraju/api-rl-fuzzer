@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlite3
 import json
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from dataclasses import asdict
 
 
@@ -96,7 +96,7 @@ class ExperimentTracker:
         """Start a new experiment; return its ID."""
         conn = self._get_conn()
         try:
-            timestamp = datetime.utcnow().isoformat()
+            timestamp = datetime.now(timezone.utc).isoformat()
             cursor = conn.execute(
                 """
                 INSERT INTO experiments
@@ -293,20 +293,20 @@ class ExperimentTracker:
             ).fetchone()
             false_positives = false_pos["count"] if false_pos else 0
 
-            # First bug found (minimum first_seen_episode and first_seen_step)
+            # First PLANTED bug found. The runner stores first_seen_step as a
+            # request index that is monotonic across the whole evaluation run,
+            # so MIN(first_seen_step) is the earliest planted bug. Incidental
+            # (non-planted) anomalies are deliberately excluded: an undeclared
+            # 404 at request 2 is not "the first bug". None if no planted bug
+            # was found.
             first_bug = conn.execute(
                 """
-                SELECT MIN(first_seen_episode) as episode, 
-                       MIN(first_seen_step) as step
-                FROM anomalies WHERE experiment_id = ?
+                SELECT MIN(first_seen_step) as step
+                FROM anomalies WHERE experiment_id = ? AND is_planted_bug = 1
                 """,
                 (experiment_id,)
             ).fetchone()
-            steps_to_first_bug = None
-            if first_bug and first_bug["episode"] is not None:
-                # Rough estimate: steps = episode * assumed_steps_per_episode + step
-                # But we'll use step count from episodes table instead
-                steps_to_first_bug = first_bug["step"] if first_bug["step"] else 0
+            steps_to_first_bug = first_bug["step"] if first_bug and first_bug["step"] is not None else None
 
             return {
                 "total_anomalies_found": total_anomalies,

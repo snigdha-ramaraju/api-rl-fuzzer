@@ -21,12 +21,83 @@ from agent.train_ppo import build_env, build_model
 from agent.random_policy import RandomPolicy
 from experiment.tracker import ExperimentTracker
 from experiment.metrics import aggregate_metrics, compare_policies
-from executor.planted_bugs import PlantedBugsMockTarget
+from executor.planted_bugs import classify_planted_bug
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MOCK_SPEC = REPO_ROOT / "tests" / "fixtures" / "sample_api.yaml"
 DEFAULT_DB = REPO_ROOT / "runs" / "phase6_experiments.db"
+
+
+def _evaluate_policy(
+    env,
+    predict,
+    tracker: ExperimentTracker,
+    exp_id: int,
+    n_episodes: int,
+    max_steps_per_episode: int,
+    reset_seed_base: int,
+    use_planted_bugs: bool,
+) -> None:
+    """Roll out `predict` for n_episodes and persist per-episode stats AND
+    every anomaly the env reports.
+
+    - Anomalies are written to the `anomalies` table at the step they occur
+      (first_seen_step = 1-based request index within this evaluation run,
+      so MIN(first_seen_step) is a true "requests to first bug").
+    - With `use_planted_bugs`, an anomaly whose (operation, status) matches a
+      planted bug is tagged is_planted_bug=1 / bug_name; every other anomaly
+      is stored as is_planted_bug=0 (a false positive w.r.t. the planted set).
+    - Coverage is read from `env.unwrapped`: gymnasium >=1.0 wrappers (e.g.
+      ScenarioSeededEnv for ppo_llm) no longer forward attributes.
+    """
+    base_env = env.unwrapped
+    global_step = 0
+
+    for ep_num in range(n_episodes):
+        obs, info = env.reset(seed=reset_seed_base + ep_num)
+
+        ep_reward = 0.0
+        step_count = 0
+
+        while step_count < max_steps_per_episode:
+            action = predict(obs)
+
+            obs, reward, done, truncated, info = env.step(action)
+
+            ep_reward += reward
+            step_count += 1
+            global_step += 1
+
+            signature = info.get("anomaly_signature")
+            if signature is not None:
+                bug_key = (
+                    classify_planted_bug(info["operation_id"], info["status_code"])
+                    if use_planted_bugs else None
+                )
+                tracker.record_anomaly_at_step(
+                    exp_id,
+                    info["operation_id"],
+                    info["status_code"],
+                    signature,
+                    episode=ep_num,
+                    step=global_step,
+                    is_planted_bug=int(bug_key is not None),
+                    bug_name=bug_key,
+                )
+
+            if done or truncated:
+                break
+
+        tracker.record_episode(
+            exp_id,
+            ep_num,
+            ep_reward,
+            step_count,
+            base_env.coverage.hits,
+            base_env.coverage.anomaly_signatures,
+            len(base_env.coverage.anomaly_signatures),
+        )
 
 
 def _run_random_policy(
@@ -63,32 +134,16 @@ def _run_random_policy(
 
     policy = RandomPolicy(env.action_space.n, seed=trial_seed)
 
-    for ep_num in range(n_episodes):
-        obs, info = env.reset(seed=trial_seed + ep_num)
-
-        ep_reward = 0.0
-        step_count = 0
-
-        while step_count < max_steps_per_episode:
-            action, _ = policy.predict(obs)
-
-            obs, reward, done, truncated, info = env.step(action)
-
-            ep_reward += reward
-            step_count += 1
-
-            if done or truncated:
-                break
-
-        tracker.record_episode(
-            exp_id,
-            ep_num,
-            ep_reward,
-            step_count,
-            env.coverage.hits,
-            env.coverage.anomaly_signatures,
-            len(env.coverage.anomaly_signatures),
-        )
+    _evaluate_policy(
+        env,
+        lambda obs: policy.predict(obs)[0],
+        tracker,
+        exp_id,
+        n_episodes,
+        max_steps_per_episode,
+        reset_seed_base=trial_seed,
+        use_planted_bugs=use_planted_bugs,
+    )
 
     env.close()
 
@@ -105,6 +160,8 @@ def _run_ppo_policy(
     trial_id: int,
     enable_brainstormer: bool = False,
     use_planted_bugs: bool = False,
+    brainstorm_interval_episodes: int = 500,
+    llm_client: object | None = None,
 ) -> int:
     """Train PPO and evaluate the resulting policy."""
 
@@ -115,6 +172,8 @@ def _run_ppo_policy(
         seed=trial_seed,
         enable_brainstormer=enable_brainstormer,
         use_planted_bugs=use_planted_bugs,
+        brainstorm_interval_episodes=brainstorm_interval_episodes,
+        llm_client=llm_client,
     )
 
     monitored_train = Monitor(train_env)
@@ -151,41 +210,27 @@ def _run_ppo_policy(
         n_episodes=n_episodes,
     )
 
+    # For evaluation, always disable brainstormer so that evaluation strictly
+    # evaluates the learned policy, without scripted scenario action overrides.
     eval_env = build_env(
         spec_path,
         use_mock=True,
         max_steps_per_episode=max_steps_per_episode,
         seed=trial_seed + 10000,
-        enable_brainstormer=enable_brainstormer,
+        enable_brainstormer=False,
         use_planted_bugs=use_planted_bugs,
     )
 
-    for ep_num in range(n_episodes):
-        obs, info = eval_env.reset(seed=trial_seed + 10000 + ep_num)
-
-        ep_reward = 0.0
-        step_count = 0
-
-        while step_count < max_steps_per_episode:
-            action, _ = model.predict(obs, deterministic=True)
-
-            obs, reward, done, truncated, info = eval_env.step(action)
-
-            ep_reward += reward
-            step_count += 1
-
-            if done or truncated:
-                break
-
-        tracker.record_episode(
-            exp_id,
-            ep_num,
-            ep_reward,
-            step_count,
-            eval_env.coverage.hits,
-            eval_env.coverage.anomaly_signatures,
-            len(eval_env.coverage.anomaly_signatures),
-        )
+    _evaluate_policy(
+        eval_env,
+        lambda obs: model.predict(obs, deterministic=True)[0],
+        tracker,
+        exp_id,
+        n_episodes,
+        max_steps_per_episode,
+        reset_seed_base=trial_seed + 10000,
+        use_planted_bugs=use_planted_bugs,
+    )
 
     eval_env.close()
 
@@ -202,6 +247,8 @@ def run_experiments(
     timesteps_per_trial: int,
     seed_start: int,
     use_planted_bugs: bool = False,
+    brainstorm_interval: int = 500,
+    llm_client: object | None = None,
 ):
     """Run a full experiment suite: all policies × all trials."""
 
@@ -266,6 +313,8 @@ def run_experiments(
                     trial_id=trial_id,
                     enable_brainstormer=True,
                     use_planted_bugs=use_planted_bugs,
+                    brainstorm_interval_episodes=brainstorm_interval,
+                    llm_client=llm_client,
                 )
 
             else:
@@ -327,11 +376,19 @@ def summarize_results(
 
                 trial = exp["trial_id"]
 
+                steps_str = (
+                    f"{metrics['steps_to_first_bug']}"
+                    if metrics.get("steps_to_first_bug") is not None
+                    else "N/A"
+                )
                 print(
                     f"  Trial {trial + 1}: "
                     f"reward={metrics['mean_episode_reward']:.3f}, "
                     f"ops={metrics['unique_operations_covered']}, "
-                    f"anomalies={metrics['unique_anomalies_found']}"
+                    f"anomalies={metrics['unique_anomalies_found']}, "
+                    f"planted_bugs={metrics.get('planted_bugs_found', 0)}/3, "
+                    f"false_pos={metrics.get('false_positives', 0)}, "
+                    f"steps_to_first_bug={steps_str}"
                 )
 
         if metrics_list:
@@ -415,6 +472,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
 
     p.add_argument(
+        "--brainstorm-interval",
+        type=int,
+        default=500,
+        help="Episodes between LLM brainstorm refreshes for ppo_llm (default: 500).",
+    )
+
+    p.add_argument(
         "--summarize-only",
         action="store_true",
         help="Skip experiments; just print aggregated results from DB.",
@@ -442,6 +506,7 @@ def main(argv: list[str] | None = None):
             timesteps_per_trial=args.timesteps,
             seed_start=args.seed_start,
             use_planted_bugs=args.use_planted_bugs,
+            brainstorm_interval=args.brainstorm_interval,
         )
 
     else:

@@ -69,6 +69,8 @@ class ApiFuzzEnv(gym.Env):
         self.coverage.reset()
         self.known_values.clear()
         self._step_count = 0
+        if hasattr(self.runner, "reset_state"):
+            self.runner.reset_state()
         return self._observation(), {}
 
     def step(self, action: int):
@@ -102,8 +104,12 @@ class ApiFuzzEnv(gym.Env):
         is_new = self.coverage.record(endpoint.operation_id, status_for_coverage)
 
         is_new_anomaly = False
+        anomaly_signature = None
         if oracle_result is not None and oracle_result.is_anomalous:
             is_new_anomaly = self.coverage.record_anomaly(
+                endpoint.operation_id, status_for_coverage, oracle_result
+            )
+            anomaly_signature = self.coverage.anomaly_signature(
                 endpoint.operation_id, status_for_coverage, oracle_result
             )
 
@@ -120,6 +126,9 @@ class ApiFuzzEnv(gym.Env):
             "is_new_coverage": is_new,
             "anomalous": bool(oracle_result and oracle_result.is_anomalous),
             "is_new_anomaly": is_new_anomaly,
+            # Signature of this step's anomaly (None if not anomalous), so
+            # experiment tracking can persist anomalies per step.
+            "anomaly_signature": anomaly_signature,
             "schema_valid_request": resolved.schema_valid,
         }
         return self._observation(), reward, terminated, truncated, info

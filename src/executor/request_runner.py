@@ -41,10 +41,22 @@ class RequestRunner:
         self.max_requests = max_requests_per_run
         self.request_count = 0
         self._last_call_ts = 0.0
+        self._transport = transport
         self._client = httpx.Client(base_url=self.base_url, transport=transport, headers=auth_header or {})
 
     def close(self) -> None:
         self._client.close()
+
+    def reset_state(self) -> None:
+        transport = self._transport if self._transport is not None else getattr(self._client, "_transport", None)
+        if transport is not None and hasattr(transport, "reset_state"):
+            try:
+                transport.reset_state(reset_base=True)
+            except TypeError:
+                transport.reset_state()
+        base = getattr(transport, "base_transport", None)
+        if base is not None and hasattr(base, "reset_state"):
+            base.reset_state()
 
     def execute(self, endpoint: Endpoint, path_values: dict, query_values: dict,
                 header_values: dict, body_values: dict) -> ExecutionResult:

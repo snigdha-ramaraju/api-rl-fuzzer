@@ -46,4 +46,10 @@ def make_mock_transport() -> httpx.MockTransport:
 
         return httpx.Response(404, json={"error": "unmatched route"})
 
-    return httpx.MockTransport(handler)
+    def reset_state() -> None:
+        store.clear()
+        counter["n"] = 0
+
+    transport = httpx.MockTransport(handler)
+    transport.reset_state = reset_state
+    return transport

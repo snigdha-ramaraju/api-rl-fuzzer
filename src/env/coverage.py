@@ -34,6 +34,21 @@ class CoverageTracker:
         self.hits[key] = self.hits.get(key, 0) + 1
         return is_new
 
+    @staticmethod
+    def anomaly_signature(operation_id: str, status_code: int,
+                          oracle_result: OracleResult) -> tuple:
+        """The canonical anomaly signature. Exposed so callers outside the
+        tracker (the experiment runner, via ApiFuzzEnv's step `info`) key
+        anomalies exactly the way the novelty gate does."""
+        return (
+            operation_id,
+            status_code,
+            oracle_result.status_known,
+            oracle_result.shape_valid,
+            tuple(sorted(oracle_result.missing_fields)),
+            tuple(sorted(oracle_result.unexpected_type_fields)),
+        )
+
     def record_anomaly(self, operation_id: str, status_code: int,
                         oracle_result: OracleResult) -> bool:
         """Records a specific anomaly SIGNATURE for this episode and
@@ -45,14 +60,7 @@ class CoverageTracker:
         same status code still counts as novel, while calling the same
         endpoint over and over and getting the identical anomaly back
         does not."""
-        signature = (
-            operation_id,
-            status_code,
-            oracle_result.status_known,
-            oracle_result.shape_valid,
-            tuple(sorted(oracle_result.missing_fields)),
-            tuple(sorted(oracle_result.unexpected_type_fields)),
-        )
+        signature = self.anomaly_signature(operation_id, status_code, oracle_result)
         is_new = signature not in self.anomaly_signatures
         self.anomaly_signatures.add(signature)
         return is_new
