@@ -1,0 +1,211 @@
+openapi: 3.0.3
+info:
+  title: E-Commerce Benchmark API
+  version: "1.0"
+  description: Multi-resource benchmark API with multi-step dependency chains for RL fuzzing evaluation.
+paths:
+  /users:
+    post:
+      operationId: createUser
+      tags: [users]
+      summary: Register a new user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email]
+              properties:
+                name:
+                  type: string
+                  example: Alice Smith
+                email:
+                  type: string
+                  example: alice@example.com
+      responses:
+        "201":
+          description: User created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [userId, name, email]
+                properties:
+                  userId:
+                    type: string
+                    example: usr-1001
+                  name:
+                    type: string
+                  email:
+                    type: string
+
+  /users/{userId}:
+    get:
+      operationId: getUser
+      tags: [users]
+      summary: Fetch user details
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: User found
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [userId, name, email]
+                properties:
+                  userId:
+                    type: string
+                  name:
+                    type: string
+                  email:
+                    type: string
+
+  /users/{userId}/cart:
+    post:
+      operationId: createCart
+      tags: [carts]
+      summary: Create a shopping cart for a user
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "201":
+          description: Cart created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [cartId, userId, status]
+                properties:
+                  cartId:
+                    type: string
+                    example: cart-5001
+                  userId:
+                    type: string
+                  status:
+                    type: string
+                    enum: [open, empty]
+
+  /carts/{cartId}/items:
+    post:
+      operationId: addItemToCart
+      tags: [carts]
+      summary: Add an item to cart
+      parameters:
+        - name: cartId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [productId, quantity]
+              properties:
+                productId:
+                  type: string
+                  example: prod-99
+                quantity:
+                  type: integer
+                  example: 1
+      responses:
+        "200":
+          description: Item added
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [cartId, itemsCount]
+                properties:
+                  cartId:
+                    type: string
+                  itemsCount:
+                    type: integer
+
+  /carts/{cartId}/checkout:
+    post:
+      operationId: checkoutCart
+      tags: [orders]
+      summary: Checkout a shopping cart
+      parameters:
+        - name: cartId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                paymentMethod:
+                  type: string
+                  enum: [credit_card, paypal]
+      responses:
+        "201":
+          description: Order generated from cart
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [orderId, cartId, total]
+                properties:
+                  orderId:
+                    type: string
+                    example: ord-8001
+                  cartId:
+                    type: string
+                  total:
+                    type: number
+
+  /orders/{orderId}/pay:
+    post:
+      operationId: payOrder
+      tags: [orders]
+      summary: Pay for an order
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount]
+              properties:
+                amount:
+                  type: number
+                  example: 49.99
+      responses:
+        "200":
+          description: Order paid
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [orderId, status]
+                properties:
+                  orderId:
+                    type: string
+                  status:
+                    type: string
+                    enum: [paid, completed]

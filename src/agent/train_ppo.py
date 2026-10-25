@@ -92,7 +92,7 @@ def build_env(
     enable_brainstormer: bool = False,
     ollama_host: str = "http://localhost:11434",
     llm_model_tier: str = "auto",
-    brainstorm_interval_episodes: int = 500,
+    brainstorm_interval_episodes: int = 50,
     max_scenarios_per_call: int = 8,
     seed_episode_probability: float = 0.15,
     api_description: str = "",
@@ -112,10 +112,14 @@ def build_env(
     corpus: SeedCorpus = build_seed_corpus(endpoints, sample_inputs)
 
     if use_mock:
-        from executor.planted_bugs import PlantedBugsMockTarget
-        base_transport = make_mock_transport()
-        if use_planted_bugs:
-            base_transport = PlantedBugsMockTarget(base_transport)
+        if "ecommerce" in str(spec_path).lower():
+            from executor.mock_ecommerce_target import make_ecommerce_mock_transport
+            base_transport = make_ecommerce_mock_transport(use_planted_bugs=use_planted_bugs)
+        else:
+            from executor.planted_bugs import PlantedBugsMockTarget
+            base_transport = make_mock_transport()
+            if use_planted_bugs:
+                base_transport = PlantedBugsMockTarget(base_transport)
         
         runner = RequestRunner(
             base_url="http://mock",
@@ -197,10 +201,165 @@ def build_model(vec_env, args: argparse.Namespace):
     )
 
 
+def build_maskable_model(vec_env, args: argparse.Namespace):
+    """Builds a MaskablePPO model using sb3-contrib for strictly valid action sampling."""
+    from sb3_contrib import MaskablePPO
+
+    return MaskablePPO(
+        "MlpPolicy",
+        vec_env,
+        n_steps=args.n_steps,
+        batch_size=args.batch_size,
+        n_epochs=args.n_epochs,
+        learning_rate=args.learning_rate,
+        gamma=args.gamma,
+        seed=args.seed,
+        verbose=args.verbose,
+    )
+
+
+def build_cross_api_env(
+    spec_path: str | Path,
+    *,
+    max_slots: int = 64,
+    max_steps_per_episode: int = 50,
+    seed_probability: float = 0.7,
+    seed: int | None = None,
+    use_mock: bool = True,
+    use_planted_bugs: bool = False,
+):
+    """Wires up a CrossApiFuzzEnv with fixed observation/action dimensions and action masking."""
+    from env.cross_api_env import CrossApiFuzzEnv, resolve_mock_transport_for_spec
+    from sb3_contrib.common.wrappers import ActionMasker
+
+    p = Path(spec_path)
+    spec = load_spec(p)
+    endpoints = parse_endpoints(spec)
+    corpus = build_seed_corpus(endpoints)
+    transport = resolve_mock_transport_for_spec(p, use_planted_bugs=use_planted_bugs)
+    runner = RequestRunner(
+        base_url="http://mock",
+        rate_limit_per_sec=0,
+        max_requests_per_run=10_000_000,
+        transport=transport,
+    )
+    env = CrossApiFuzzEnv(
+        endpoints=endpoints,
+        corpus=corpus,
+        runner=runner,
+        max_slots=max_slots,
+        max_steps_per_episode=max_steps_per_episode,
+        seed_probability=seed_probability,
+        seed=seed,
+    )
+    return ActionMasker(env, lambda e: e.action_masks())
+
+
+def build_multi_api_env(
+    spec_paths: list[str | Path],
+    *,
+    max_slots: int = 64,
+    max_steps_per_episode: int = 50,
+    seed_probability: float = 0.7,
+    seed: int | None = None,
+    use_mock: bool = True,
+    use_planted_bugs: bool = False,
+):
+    """Wires up a MultiApiFuzzEnv with action masking across multiple OpenAPI specs."""
+    from env.cross_api_env import MultiApiFuzzEnv
+    from sb3_contrib.common.wrappers import ActionMasker
+
+    env = MultiApiFuzzEnv(
+        spec_paths=spec_paths,
+        max_slots=max_slots,
+        max_steps_per_episode=max_steps_per_episode,
+        seed_probability=seed_probability,
+        seed=seed,
+        use_mock=use_mock,
+        use_planted_bugs=use_planted_bugs,
+    )
+    return ActionMasker(env, lambda e: e.action_masks())
+
+
+def train_cross_api(
+    spec_paths: list[str | Path],
+    output_path: str | Path,
+    timesteps: int = 20_000,
+    args: argparse.Namespace | None = None,
+    max_slots: int = 64,
+):
+    """Trains a reusable MaskablePPO policy across multiple APIs and saves the model."""
+    from stable_baselines3.common.callbacks import CheckpointCallback
+    from stable_baselines3.common.monitor import Monitor
+    from stable_baselines3.common.vec_env import DummyVecEnv
+
+    if args is None:
+        args = argparse.Namespace(
+            n_steps=256,
+            batch_size=64,
+            n_epochs=10,
+            learning_rate=3e-4,
+            gamma=0.99,
+            seed=42,
+            verbose=1,
+            max_steps_per_episode=50,
+            seed_probability=0.7,
+            use_planted_bugs=False,
+            checkpoint_freq=0,
+        )
+
+    env = build_multi_api_env(
+        spec_paths,
+        max_slots=max_slots,
+        max_steps_per_episode=getattr(args, "max_steps_per_episode", 50),
+        seed_probability=getattr(args, "seed_probability", 0.7),
+        seed=getattr(args, "seed", None),
+        use_planted_bugs=getattr(args, "use_planted_bugs", False),
+    )
+
+    monitored = Monitor(env)
+    vec_env = DummyVecEnv([lambda: monitored])
+
+    model = build_maskable_model(vec_env, args)
+
+    callbacks = []
+    if getattr(args, "checkpoint_freq", 0) and args.checkpoint_freq > 0:
+        checkpoint_dir = Path(output_path).parent / "checkpoints"
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        callbacks.append(
+            CheckpointCallback(
+                save_freq=args.checkpoint_freq,
+                save_path=str(checkpoint_dir),
+                name_prefix="cross_api_ppo",
+            )
+        )
+
+    model.learn(total_timesteps=timesteps, callback=callbacks or None)
+
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    model.save(str(out))
+    print(f"[train_cross_api] Saved trained model to {out.with_suffix('.zip')}")
+
+    vec_env.close()
+    return model
+
+
 def train(args: argparse.Namespace):
     from stable_baselines3.common.callbacks import CheckpointCallback
     from stable_baselines3.common.monitor import Monitor
     from stable_baselines3.common.vec_env import DummyVecEnv
+
+    # Multi-API path
+    if getattr(args, "specs", None) or getattr(args, "multi_api", False):
+        specs = args.specs or ([args.spec] if args.spec else [DEFAULT_MOCK_SPEC])
+        return train_cross_api(
+            spec_paths=specs,
+            output_path=args.output,
+            timesteps=args.timesteps,
+            args=args,
+            max_slots=getattr(args, "max_slots", 64),
+        )
 
     spec_path = args.spec or (DEFAULT_MOCK_SPEC if args.mock else None)
     if spec_path is None:
@@ -254,6 +413,12 @@ def train(args: argparse.Namespace):
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Phase 4: PPO training against ApiFuzzEnv.")
     p.add_argument("--spec", type=str, default=None, help="Path to the OpenAPI spec.")
+    p.add_argument("--specs", type=str, nargs="+", default=None,
+                   help="Paths to multiple OpenAPI specs for cross-API training.")
+    p.add_argument("--multi-api", action="store_true",
+                   help="Train a shared policy across multiple APIs.")
+    p.add_argument("--max-slots", type=int, default=64,
+                   help="Maximum endpoint slot capacity for cross-API environment (default: 64).")
     p.add_argument("--target-config", type=str, default=None,
                     help="Path to a target.yaml (required unless --mock).")
     p.add_argument("--sample-inputs", type=str, default=None,

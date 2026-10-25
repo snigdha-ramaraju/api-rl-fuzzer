@@ -106,7 +106,7 @@ def test_llm_client_uses_local_ollama_only(mock_client_cls):
 
     assert isinstance(result, ScenarioBatch)
     assert result.scenarios[0].sequence[0].operation_id == "createOrder"
-    mock_client_cls.assert_called_once_with(host="http://localhost:11434")
+    mock_client_cls.assert_called_once_with(host="http://localhost:11434", timeout=90.0)
 
 
 @patch("brainstormer.llm_client.ollama.Client")
@@ -318,7 +318,7 @@ def test_build_env_without_brainstormer_flag_returns_plain_apifuzzenv():
 @patch("brainstormer.llm_client.ollama.Client")
 def test_build_env_with_brainstormer_flag_returns_wrapped_env(mock_client_cls):
     mock_instance = MagicMock()
-    mock_instance.list.return_value = {"models": [{"model": "qwen2.5:3b-instruct"}]}
+    mock_instance.list.return_value = {"models": [{"model": "qwen2.5:3b"}]}
     mock_instance.chat.return_value = {
         "message": {"content": json.dumps({"scenarios": []})}
     }

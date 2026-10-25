@@ -12,7 +12,7 @@ import subprocess
 import psutil
 
 MODEL_TIERS = {
-    "small": "qwen2.5:3b-instruct",
+    "small": "qwen2.5:3b",
     "medium": "qwen2.5:7b-instruct",
     "large": "qwen2.5:14b-instruct",
 }

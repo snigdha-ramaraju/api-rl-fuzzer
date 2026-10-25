@@ -24,8 +24,9 @@ class ScenarioPool:
     corpus: SeedCorpus
     unresolved_fields: list[dict] = field(default_factory=list)
     api_description: str = ""
-    brainstorm_interval_episodes: int = 500
+    brainstorm_interval_episodes: int = 50
     max_scenarios_per_call: int = 8
+    brainstorm_calls: int = 0
 
     _queue: list[Scenario] = field(default_factory=list, repr=False)
     _episode_count: int = field(default=0, repr=False)
@@ -39,6 +40,7 @@ class ScenarioPool:
         if self._episode_count % self.brainstorm_interval_episodes != 0:
             return 0
 
+        self.brainstorm_calls += 1
         prompt = build_brainstorm_prompt(
             self.endpoints, self.corpus,
             coverage_summary=coverage_summary,

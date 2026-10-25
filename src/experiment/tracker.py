@@ -40,7 +40,15 @@ class ExperimentTracker:
                 timestamp TEXT NOT NULL,
                 max_steps_per_episode INTEGER,
                 timesteps_total INTEGER,
-                n_episodes INTEGER
+                n_episodes INTEGER,
+                training_requests INTEGER DEFAULT 0,
+                prep_requests INTEGER DEFAULT 0,
+                eval_requests INTEGER DEFAULT 0,
+                total_requests INTEGER DEFAULT 0,
+                brainstorm_calls INTEGER DEFAULT 0,
+                seeded_episodes INTEGER DEFAULT 0,
+                exploration_requests INTEGER DEFAULT 0,
+                ppo_requests INTEGER DEFAULT 0
             );
             
             CREATE TABLE IF NOT EXISTS episodes (
@@ -86,6 +94,23 @@ class ExperimentTracker:
             CREATE INDEX IF NOT EXISTS idx_coverage_experiment ON coverage_hits(experiment_id);
             CREATE INDEX IF NOT EXISTS idx_anomalies_experiment ON anomalies(experiment_id);
             """)
+
+            # Ensure optional/extended columns exist in existing DBs
+            cursor = conn.execute("PRAGMA table_info(experiments)")
+            existing_cols = {row["name"] for row in cursor.fetchall()}
+            for col, col_type in [
+                ("training_requests", "INTEGER DEFAULT 0"),
+                ("prep_requests", "INTEGER DEFAULT 0"),
+                ("eval_requests", "INTEGER DEFAULT 0"),
+                ("total_requests", "INTEGER DEFAULT 0"),
+                ("brainstorm_calls", "INTEGER DEFAULT 0"),
+                ("seeded_episodes", "INTEGER DEFAULT 0"),
+                ("exploration_requests", "INTEGER DEFAULT 0"),
+                ("ppo_requests", "INTEGER DEFAULT 0"),
+            ]:
+                if col not in existing_cols:
+                    conn.execute(f"ALTER TABLE experiments ADD COLUMN {col} {col_type}")
+
             conn.commit()
         finally:
             conn.close()
@@ -268,6 +293,42 @@ class ExperimentTracker:
         finally:
             conn.close()
 
+    def record_request_counts(
+        self,
+        experiment_id: int,
+        training_requests: int = 0,
+        prep_requests: int = 0,
+        eval_requests: int = 0,
+        total_requests: int = 0,
+        brainstorm_calls: int = 0,
+        seeded_episodes: int = 0,
+        exploration_requests: int = 0,
+        ppo_requests: int = 0,
+    ):
+        """Update request accounting and brainstorm activity for an experiment."""
+        conn = self._get_conn()
+        try:
+            conn.execute(
+                """
+                UPDATE experiments
+                SET training_requests = ?,
+                    prep_requests = ?,
+                    eval_requests = ?,
+                    total_requests = ?,
+                    brainstorm_calls = ?,
+                    seeded_episodes = ?,
+                    exploration_requests = ?,
+                    ppo_requests = ?
+                WHERE id = ?
+                """,
+                (training_requests, prep_requests, eval_requests, total_requests,
+                 brainstorm_calls, seeded_episodes, exploration_requests, ppo_requests,
+                 experiment_id)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
     def get_bug_discoveries(self, experiment_id: int) -> dict:
         """Get bug discovery metrics for an experiment."""
         conn = self._get_conn()
@@ -279,9 +340,9 @@ class ExperimentTracker:
             ).fetchone()
             total_anomalies = total_anom["count"] if total_anom else 0
 
-            # Planted bugs (genuinely triggerable bugs)
+            # Planted bugs: count DISTINCT bug_name so multiple signatures for one bug cannot inflate the total
             planted = conn.execute(
-                "SELECT COUNT(*) as count FROM anomalies WHERE experiment_id = ? AND is_planted_bug = 1",
+                "SELECT COUNT(DISTINCT bug_name) as count FROM anomalies WHERE experiment_id = ? AND is_planted_bug = 1 AND bug_name IS NOT NULL",
                 (experiment_id,)
             ).fetchone()
             planted_bugs_found = planted["count"] if planted else 0
@@ -337,9 +398,15 @@ class ExperimentTracker:
             ).fetchall()
             episode_list = [dict(e) for e in episodes]
 
-            # Coverage
+            # Coverage: separate distinct coverage states from total hits volume
             coverage_rows = conn.execute(
-                "SELECT COUNT(DISTINCT operation_id) as unique_ops, COUNT(*) as total_hits FROM coverage_hits WHERE experiment_id = ?",
+                """
+                SELECT
+                    COUNT(DISTINCT operation_id) as unique_ops,
+                    COUNT(*) as distinct_coverage_states,
+                    COALESCE(SUM(count), 0) as total_coverage_hits
+                FROM coverage_hits WHERE experiment_id = ?
+                """,
                 (experiment_id,)
             ).fetchone()
             coverage_dict = dict(coverage_rows) if coverage_rows else {}
@@ -359,6 +426,49 @@ class ExperimentTracker:
             # Get bug discovery metrics
             bug_metrics = self.get_bug_discoveries(experiment_id)
 
+            # Request accounting
+            training_reqs = exp_dict["training_requests"] if exp_dict.get("training_requests") is not None else 0
+            prep_reqs = exp_dict["prep_requests"] if exp_dict.get("prep_requests") is not None else 0
+            eval_reqs = (
+                exp_dict["eval_requests"]
+                if exp_dict.get("eval_requests") is not None
+                else sum(e["steps_taken"] for e in episode_list)
+            )
+            total_reqs = (
+                exp_dict["total_requests"]
+                if exp_dict.get("total_requests") is not None
+                else (training_reqs + prep_reqs + eval_reqs)
+            )
+            exploration_reqs = (
+                exp_dict["exploration_requests"]
+                if exp_dict.get("exploration_requests") is not None
+                else prep_reqs
+            )
+            ppo_reqs = (
+                exp_dict["ppo_requests"]
+                if exp_dict.get("ppo_requests") is not None
+                else eval_reqs
+            )
+
+            # Exploration vs PPO anomaly breakdown
+            exp_anom_row = conn.execute(
+                "SELECT COUNT(*) as cnt FROM anomalies WHERE experiment_id = ? AND first_seen_episode = 0",
+                (experiment_id,)
+            ).fetchone()
+            exploration_anomalies = exp_anom_row["cnt"] if exp_anom_row else 0
+
+            ppo_anom_row = conn.execute(
+                "SELECT COUNT(*) as cnt FROM anomalies WHERE experiment_id = ? AND first_seen_episode > 0",
+                (experiment_id,)
+            ).fetchone()
+            ppo_anomalies = ppo_anom_row["cnt"] if ppo_anom_row else 0
+
+            eval_steps_to_first_bug = bug_metrics.get("steps_to_first_bug")
+            total_requests_to_first_bug = (
+                (training_reqs + prep_reqs + eval_steps_to_first_bug)
+                if eval_steps_to_first_bug is not None else None
+            )
+
             return {
                 "experiment_id": experiment_id,
                 "name": exp_dict["name"],
@@ -370,11 +480,24 @@ class ExperimentTracker:
                 "mean_episode_reward": mean_reward,
                 "mean_steps_per_episode": mean_steps,
                 "unique_operations_covered": coverage_dict.get("unique_ops", 0),
-                "total_coverage_hits": coverage_dict.get("total_hits", 0),
+                "distinct_coverage_states": coverage_dict.get("distinct_coverage_states", 0),
+                "total_coverage_hits": coverage_dict.get("total_coverage_hits", 0),
                 "unique_anomalies_found": anomaly_count,
                 "planted_bugs_found": bug_metrics.get("planted_bugs_found", 0),
                 "false_positives": bug_metrics.get("false_positives", 0),
-                "steps_to_first_bug": bug_metrics.get("steps_to_first_bug", None),
+                "steps_to_first_bug": eval_steps_to_first_bug,
+                "eval_steps_to_first_bug": eval_steps_to_first_bug,
+                "total_requests_to_first_bug": total_requests_to_first_bug,
+                "training_requests": training_reqs,
+                "prep_requests": prep_reqs,
+                "eval_requests": eval_reqs,
+                "total_requests": total_reqs,
+                "exploration_requests": exploration_reqs,
+                "ppo_requests": ppo_reqs,
+                "exploration_anomalies": exploration_anomalies,
+                "ppo_anomalies": ppo_anomalies,
+                "brainstorm_calls": exp_dict.get("brainstorm_calls", 0) or 0,
+                "seeded_episodes": exp_dict.get("seeded_episodes", 0) or 0,
                 "episodes": episode_list,
             }
         finally:

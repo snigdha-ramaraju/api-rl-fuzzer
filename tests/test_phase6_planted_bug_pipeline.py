@@ -611,8 +611,169 @@ def test_policy_metrics_includes_planted_bugs_and_false_positives():
     rendered = str(agg)
     assert "Planted bugs found: 2.50" in rendered
     assert "False positives: 1.00" in rendered
-    assert "Mean steps to first bug: 20.0" in rendered
+    assert "Eval steps to first bug: 20.0" in rendered
 
     compared = compare_policies([agg])
     assert "EXPERIMENT COMPARISON" in compared
     assert "Planted bugs found: 2.50" in compared
+
+
+# ---------- 8. Methodology regression tests (Audit Corrections A, B, C) ----------
+
+def test_evaluation_seed_pairing_is_identical_across_all_policies():
+    """Random, PPO, and PPO+LLM must receive identical evaluation seed schedules."""
+    from unittest import mock
+    import experiment.runner as runner_mod
+    from experiment.runner import EVALUATION_SEED_OFFSET
+
+    trial_seed = 42
+    n_episodes = 5
+    expected_eval_seeds = [trial_seed + EVALUATION_SEED_OFFSET + ep for ep in range(n_episodes)]
+
+    assert EVALUATION_SEED_OFFSET >= 10000
+
+    captured_seeds = {}
+    orig_evaluate = runner_mod._evaluate_policy
+
+    def mock_eval(env, predict, tracker, exp_id, n_ep, max_steps, reset_seed_base, use_planted_bugs=False, **kwargs):
+        captured_seeds[exp_id] = [reset_seed_base + ep for ep in range(n_ep)]
+        return orig_evaluate(env, predict, tracker, exp_id, 1, 10, reset_seed_base, use_planted_bugs=use_planted_bugs)
+
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "seeds.db"
+        with mock.patch("experiment.runner._evaluate_policy", side_effect=mock_eval):
+            r_id = _run_random_policy(FIXTURE_SPEC, n_episodes=n_episodes, max_steps_per_episode=10,
+                                      use_planted_bugs=False, trial_seed=trial_seed, db_path=db, trial_id=0)
+            p_id = _run_ppo_policy(FIXTURE_SPEC, n_episodes=n_episodes, max_steps_per_episode=10,
+                                   timesteps_total=128, trial_seed=trial_seed, db_path=db, trial_id=0,
+                                   enable_brainstormer=False)
+            pllm_id = _run_ppo_policy(FIXTURE_SPEC, n_episodes=n_episodes, max_steps_per_episode=10,
+                                      timesteps_total=128, trial_seed=trial_seed, db_path=db, trial_id=0,
+                                      enable_brainstormer=True, llm_client=_MockLLMClient())
+
+        assert captured_seeds[r_id] == expected_eval_seeds
+        assert captured_seeds[p_id] == expected_eval_seeds
+        assert captured_seeds[pllm_id] == expected_eval_seeds
+        assert all(s != trial_seed for s in expected_eval_seeds)
+
+
+def test_distinct_bug_count_by_bug_name_prevents_signature_inflation():
+    """Multiple distinct signatures for the same planted bug do not inflate planted_bugs_found."""
+    with tempfile.TemporaryDirectory() as d:
+        tracker = ExperimentTracker(Path(d) / "db.db")
+        exp_id = tracker.start_experiment("test", "random", 0, 42, 50, 0, 1)
+
+        sig1 = ("getOrder", 400, False, False, ("fieldA",), ())
+        sig2 = ("getOrder", 400, False, False, ("fieldB",), ())
+
+        tracker.record_anomaly_at_step(exp_id, "getOrder", 400, sig1, 0, 5,
+                                      is_planted_bug=1, bug_name="bug_getorder_malformed_id")
+        tracker.record_anomaly_at_step(exp_id, "getOrder", 400, sig2, 0, 10,
+                                      is_planted_bug=1, bug_name="bug_getorder_malformed_id")
+
+        discoveries = tracker.get_bug_discoveries(exp_id)
+        # Even though there are 2 anomaly rows, distinct bug count MUST be 1
+        assert discoveries["planted_bugs_found"] == 1
+        assert discoveries["total_anomalies_found"] == 2
+
+
+def test_coverage_distinguishes_distinct_states_from_total_hits_volume():
+    """Tracker and metrics report both distinct coverage states and total hit volume."""
+    with tempfile.TemporaryDirectory() as d:
+        tracker = ExperimentTracker(Path(d) / "db.db")
+        exp_id = tracker.start_experiment("test", "random", 0, 42, 50, 0, 2)
+
+        # Episode 1: 5 hits on (createOrder, 201), 3 hits on (getOrder, 200)
+        hits_ep1 = {("createOrder", 201): 5, ("getOrder", 200): 3}
+        tracker.record_episode(exp_id, 0, 10.0, 8, hits_ep1, set(), 0)
+
+        # Episode 2: 5 more hits on (createOrder, 201)
+        hits_ep2 = {("createOrder", 201): 5}
+        tracker.record_episode(exp_id, 1, 5.0, 5, hits_ep2, set(), 0)
+
+        metrics = tracker.compute_final_metrics(exp_id)
+        assert metrics["distinct_coverage_states"] == 2
+        assert metrics["total_coverage_hits"] == 13
+
+
+def test_new_anomalies_tracks_genuinely_novel_signatures_per_episode():
+    """new_anomalies logs only novel anomaly signatures discovered in that episode."""
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "db.db"
+        tracker = ExperimentTracker(db)
+        exp_id = tracker.start_experiment("test", "random", 0, 42, 50, 0, 2)
+
+        sig1 = ("getOrder", 404, False, None, (), ())
+
+        class MockEnv:
+            def __init__(self):
+                self.unwrapped = self
+                self.coverage = type("Cov", (), {"hits": {}, "anomaly_signatures": {sig1}})()
+                self._ep = 0
+            def reset(self, seed=None):
+                return None, {}
+            def step(self, action):
+                self._ep += 1
+                return None, 0.0, True, False, {"anomaly_signature": sig1, "operation_id": "getOrder", "status_code": 404}
+
+        from experiment.runner import _evaluate_policy
+        _evaluate_policy(MockEnv(), lambda o: 0, tracker, exp_id, n_episodes=2,
+                         max_steps_per_episode=1, reset_seed_base=10000, use_planted_bugs=False)
+
+        episodes = tracker.get_episodes(exp_id)
+        assert len(episodes) == 2
+        # Episode 0 found sig1 -> 1 new anomaly
+        assert episodes[0]["new_anomalies"] == 1
+        # Episode 1 saw sig1 again -> 0 new anomalies
+        assert episodes[1]["new_anomalies"] == 0
+
+
+def test_request_accounting_and_eval_steps_vs_total_requests_to_first_bug():
+    """Tracker accurately distinguishes evaluation steps to first bug from total requests to first bug."""
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "db.db"
+        exp_id = _run_ppo_policy(FIXTURE_SPEC, n_episodes=3, max_steps_per_episode=20,
+                                 timesteps_total=256, trial_seed=3, db_path=db, trial_id=0,
+                                 use_planted_bugs=True)
+        tracker = ExperimentTracker(db)
+        metrics = tracker.compute_final_metrics(exp_id)
+
+        assert metrics["training_requests"] > 0
+        assert metrics["eval_requests"] > 0
+        assert metrics["total_requests"] == metrics["training_requests"] + metrics["prep_requests"] + metrics["eval_requests"]
+
+        if metrics["eval_steps_to_first_bug"] is not None:
+            expected_total = metrics["training_requests"] + metrics["prep_requests"] + metrics["eval_steps_to_first_bug"]
+            assert metrics["total_requests_to_first_bug"] == expected_total
+
+
+def test_ppo_llm_short_run_invokes_mock_llm_and_reports_activity():
+    """Default-style short PPO+LLM run invokes mock LLM and reports activity metrics."""
+    mock_llm = _MockLLMClient()
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "db.db"
+        exp_id = _run_ppo_policy(
+            FIXTURE_SPEC,
+            n_episodes=2,
+            max_steps_per_episode=20,
+            timesteps_total=256,
+            trial_seed=5,
+            db_path=db,
+            trial_id=0,
+            enable_brainstormer=True,
+            use_planted_bugs=True,
+            brainstorm_interval_episodes=2,
+            llm_client=mock_llm,
+        )
+        assert mock_llm.call_count >= 1
+
+        tracker = ExperimentTracker(db)
+        metrics = tracker.compute_final_metrics(exp_id)
+        assert metrics["brainstorm_calls"] >= 1
+        assert metrics["prep_requests"] >= 0
+
+
+def test_default_brainstorm_interval_cli_is_50():
+    parser = build_arg_parser()
+    args = parser.parse_args([])
+    assert args.brainstorm_interval == 50

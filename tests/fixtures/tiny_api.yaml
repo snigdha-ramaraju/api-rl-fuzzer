@@ -1,0 +1,58 @@
+openapi: 3.0.3
+info:
+  title: Tiny Auth API
+  version: "1.0"
+  description: Minimal 2-endpoint API for held-out cross-API evaluation.
+paths:
+  /auth/token:
+    post:
+      operationId: login
+      summary: Authenticate user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username:
+                  type: string
+                  example: admin
+                password:
+                  type: string
+                  example: secret
+      responses:
+        "200":
+          description: Token response
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token]
+                properties:
+                  token:
+                    type: string
+                    example: tok-12345
+  /auth/profile:
+    get:
+      operationId: getProfile
+      summary: Get user profile
+      parameters:
+        - name: token
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: User profile
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  username:
+                    type: string
+        "401":
+          description: Unauthorized

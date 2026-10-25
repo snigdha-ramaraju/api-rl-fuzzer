@@ -71,6 +71,13 @@ def classify_planted_bug(operation_id: str, status_code: int | None) -> str | No
     for key, bug in _BUG_DEFINITIONS.items():
         if bug["operation_id"] == operation_id and bug["status"] == status_code:
             return key
+    try:
+        from executor.mock_ecommerce_target import ECOMMERCE_PLANTED_BUGS
+        for key, bug in ECOMMERCE_PLANTED_BUGS.items():
+            if bug["operation_id"] == operation_id and bug["status"] == status_code:
+                return key
+    except ImportError:
+        pass
     return None
 
 

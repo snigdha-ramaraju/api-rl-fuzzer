@@ -39,6 +39,20 @@ class ScenarioSeededEnv(gym.Wrapper):
         self._scripted_pos = 0
         self._current_scenario = None
         self._prepared_ops: set[str] = set()
+        self._prep_requests_count = 0
+        self._seeded_episodes_count = 0
+
+    @property
+    def prep_request_count(self) -> int:
+        return self._prep_requests_count
+
+    @property
+    def seeded_episodes(self) -> int:
+        return self._seeded_episodes_count
+
+    @property
+    def brainstorm_calls(self) -> int:
+        return getattr(self.scenario_pool, "brainstorm_calls", 0)
 
     def _coverage_summary(self) -> dict:
         return {
@@ -67,6 +81,7 @@ class ScenarioSeededEnv(gym.Wrapper):
             scenario = self.scenario_pool.pop_scenario()
             if scenario is not None:
                 self._current_scenario = scenario
+                self._seeded_episodes_count += 1
                 op_to_idx = {e.operation_id: i for i, e in enumerate(self.env.endpoints)}
                 actions = [op_to_idx[step.operation_id] for step in scenario.sequence
                            if step.operation_id in op_to_idx]
@@ -90,6 +105,7 @@ class ScenarioSeededEnv(gym.Wrapper):
                             self.env.seed_probability,
                         )
                         try:
+                            self._prep_requests_count += 1
                             result = self.env.runner.execute(
                                 endpoint,
                                 resolved.path_values,

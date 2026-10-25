@@ -10,9 +10,13 @@ dependencies = [
     "gymnasium>=0.29",
     "numpy>=1.26",
     "stable-baselines3>=2.3,<3.0",
+    "sb3-contrib>=2.3,<3.0",
     "pydantic>=2.6",
     "ollama>=0.3",
     "psutil>=5.9",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.28.0",
+    "python-multipart>=0.0.9",
 ]
 # The LLM brainstormer (Phase 5) is a required component, but talks only
 # to a locally-running Ollama instance (see src/brainstormer/llm_client.py)
