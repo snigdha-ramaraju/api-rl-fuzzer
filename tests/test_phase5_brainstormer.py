@@ -653,3 +653,46 @@ def test_llm_client_respects_maximum_scenario_count(mock_client_cls):
     assert isinstance(result, ScenarioBatch)
     assert result.scenarios == []
     assert mock_instance.chat.call_count == 3
+
+@patch("brainstormer.llm_client.ollama.Client")
+def test_llm_client_handles_missing_model(mock_client_cls):
+    from brainstormer.llm_client import LLMClient
+
+    mock_instance = MagicMock()
+    mock_instance.list.return_value = {"models": []}
+    mock_client_cls.return_value = mock_instance
+
+    client = LLMClient(
+        host="http://localhost:11434",
+        model_tier_setting="small",
+    )
+
+    assert client.available is False
+
+    result = client.brainstorm("dummy prompt", max_scenarios=1)
+
+    assert result.scenarios == []
+    mock_instance.chat.assert_not_called()
+
+
+@patch("brainstormer.llm_client.ollama.Client")
+def test_llm_client_handles_generation_timeout(mock_client_cls):
+    from brainstormer.llm_client import LLMClient
+
+    mock_instance = MagicMock()
+    mock_instance.list.return_value = {
+        "models": [{"model": "qwen2.5:3b"}]
+    }
+    mock_instance.chat.side_effect = TimeoutError("Request timed out")
+    mock_client_cls.return_value = mock_instance
+
+    client = LLMClient(
+        host="http://localhost:11434",
+        model_tier_setting="small",
+        max_retries=0,
+    )
+
+    result = client.brainstorm("dummy prompt", max_scenarios=1)
+
+    assert result.scenarios == []
+    mock_instance.chat.assert_called_once()
