@@ -1,8 +1,15 @@
+
 """
-Every scenario the LLM proposes must be checked against the actual parsed
-OpenAPI spec before it's usable. Local open-source models at 3b-14b will
-hallucinate endpoint names occasionally -- this is a hard filter, not a
-warning: invalid scenarios are dropped, never repaired by guessing.
+Every LLM-generated scenario must be checked against the actual
+parsed OpenAPI specification before it can be used.
+
+Checks:
+- Operation IDs
+- HTTP methods
+- Unknown parameters
+- Missing required parameters
+
+Invalid scenarios are rejected, never silently repaired.
 """
 
 from __future__ import annotations
@@ -16,25 +23,94 @@ from .scenarios import Scenario, ScenarioBatch
 @dataclass
 class GroundingReport:
     valid: list[Scenario]
-    rejected: list[dict]  # {"scenario": Scenario, "reason": str}
+    rejected: list[dict]
 
 
-def validate_batch(batch: ScenarioBatch, endpoints: list[Endpoint]) -> GroundingReport:
-    known_ops = {e.operation_id for e in endpoints}
+def validate_batch(
+    batch: ScenarioBatch,
+    endpoints: list[Endpoint],
+) -> GroundingReport:
+
+    known_endpoints = {
+        endpoint.operation_id: endpoint
+        for endpoint in endpoints
+    }
+
     valid: list[Scenario] = []
     rejected: list[dict] = []
 
     for scenario in batch.scenarios:
-        unknown_ops = [s.operation_id for s in scenario.sequence if s.operation_id not in known_ops]
-        if unknown_ops:
+
+        rejection_reason = None
+
+        if not scenario.sequence:
+            rejection_reason = "empty sequence"
+
+        else:
+            for step in scenario.sequence:
+
+                endpoint = known_endpoints.get(step.operation_id)
+
+                if endpoint is None:
+                    rejection_reason = (
+                        f"unknown operationId: {step.operation_id}"
+                    )
+                    break
+
+                expected_method = endpoint.method.upper()
+
+                if step.http_method.upper() != expected_method:
+                    rejection_reason = (
+                        f"HTTP method mismatch for {step.operation_id}: "
+                        f"expected {expected_method}, got {step.http_method}"
+                    )
+                    break
+
+                allowed_parameters = {
+                    field.name
+                    for field in endpoint.all_input_fields
+                }
+
+                required_parameters = {
+                    field.name
+                    for field in endpoint.all_input_fields
+                    if field.required
+                }
+
+                supplied_parameters = set(step.parameters.keys())
+
+                unknown_parameters = (
+                    supplied_parameters - allowed_parameters
+                )
+
+                missing_parameters = (
+                    required_parameters - supplied_parameters
+                )
+
+                if unknown_parameters:
+                    rejection_reason = (
+                        f"unknown parameter(s) for {step.operation_id}: "
+                        f"{sorted(unknown_parameters)}"
+                    )
+                    break
+
+                if missing_parameters:
+                    rejection_reason = (
+                        f"missing required parameter(s) for "
+                        f"{step.operation_id}: "
+                        f"{sorted(missing_parameters)}"
+                    )
+                    break
+
+        if rejection_reason:
             rejected.append({
                 "scenario": scenario,
-                "reason": f"references unknown operationId(s): {unknown_ops}",
+                "reason": rejection_reason,
             })
-            continue
-        if len(scenario.sequence) < 1:
-            rejected.append({"scenario": scenario, "reason": "empty sequence"})
-            continue
-        valid.append(scenario)
+        else:
+            valid.append(scenario)
 
-    return GroundingReport(valid=valid, rejected=rejected)
+    return GroundingReport(
+        valid=valid,
+        rejected=rejected,
+    )

@@ -40,7 +40,7 @@ def detect_tier() -> str:
     if vram_gb is not None and vram_gb >= 16:
         return "large"
     if vram_gb is not None and vram_gb >= 6:
-        return "medium"
+        return "small"
     if ram_gb >= 32:
         return "large"
     if ram_gb >= 16:

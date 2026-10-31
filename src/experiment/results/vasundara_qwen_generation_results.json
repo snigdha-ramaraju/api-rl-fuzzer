@@ -1,0 +1,81 @@
+{
+    "api": "OWASP crAPI",
+    "scope": "login endpoint only",
+    "model": "qwen2.5:3b",
+    "generation_method": "local Ollama structured JSON",
+    "requested_scenario_types": [
+        "valid",
+        "boundary",
+        "invalid"
+    ],
+    "generation_time_seconds": 7.559,
+    "generated_count": 3,
+    "accepted_count": 3,
+    "rejected_count": 0,
+    "rejection_rate_percent": 0.0,
+    "accepted_scenario_types": [
+        "valid",
+        "boundary",
+        "invalid"
+    ],
+    "accepted_scenarios": [
+        {
+            "sequence": [
+                {
+                    "operation_id": "login",
+                    "http_method": "POST",
+                    "parameters": {
+                        "email": "user@example.com",
+                        "password": "SecurePassword123"
+                    },
+                    "hint": ""
+                }
+            ],
+            "scenario_type": "valid",
+            "hypothesis": "Test the login endpoint with valid credentials.",
+            "purpose": "Verify that the login endpoint accepts and processes valid user authentication data correctly.",
+            "tag": "auth-boundary"
+        },
+        {
+            "sequence": [
+                {
+                    "operation_id": "login",
+                    "http_method": "POST",
+                    "parameters": {
+                        "email": "user@example.com",
+                        "password": "Test!123"
+                    },
+                    "hint": ""
+                }
+            ],
+            "scenario_type": "boundary",
+            "hypothesis": "Test login with an unusually long email and password.",
+            "purpose": "Explore the boundary of allowed input lengths for email and password parameters.",
+            "tag": "other"
+        },
+        {
+            "sequence": [
+                {
+                    "operation_id": "login",
+                    "http_method": "POST",
+                    "parameters": {
+                        "email": "test@example.com",
+                        "password": "Test!1"
+                    },
+                    "hint": ""
+                }
+            ],
+            "scenario_type": "invalid",
+            "hypothesis": "Attempt login with a password that is too short.",
+            "purpose": "Verify the API's input validation for password length.",
+            "tag": "auth-boundary"
+        }
+    ],
+    "rejected_scenarios": [],
+    "limitations": [
+        "Only the login endpoint was tested.",
+        "No live crAPI backend was used.",
+        "Grounding checks specification consistency, not runtime behaviour.",
+        "Scenario type coverage reflects actual generated output."
+    ]
+}
